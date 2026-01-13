@@ -1,0 +1,50 @@
+# Setup Guide (Cloudflare Dashboard)
+
+## 1) Prerequisites
+- A Cloudflare account
+- A domain added to Cloudflare (example: `yourdomain.com`)
+- Cloudflare Workers enabled for your account
+
+## 2) Create DNS records (subdomains)
+Cloudflare Dashboard → **DNS** → **Records** → **Add record**
+
+For each subdomain you want to mask:
+- Type: `CNAME`
+- Name: `movie1` (or `app1`, `tools`, etc.)
+- Target: `workers.dev` is NOT required; you can point to anything because the Worker route will catch it
+- Proxy status: **Proxied** (orange cloud ON)
+
+Repeat for all vanity subdomains you want to use.
+
+Tip: You can also use an A record to `192.0.2.1` (TEST-NET) as placeholder.  
+DNS target does not matter if Worker routes handle the host.
+
+## 3) Create the Worker
+Cloudflare Dashboard → **Workers & Pages** → **Create** → **Worker**
+
+- Name your worker, e.g. `masked-url-worker`
+- Click **Edit code**
+- Replace the default code with `src/worker.js`
+- Click **Save and deploy**
+
+## 4) Add Worker Routes
+Cloudflare Dashboard → **Workers & Pages** → your Worker → **Triggers** → **Routes** → **Add route**
+
+Recommended patterns:
+- If all vanity hosts are subdomains:
+  - `*.yourdomain.com/*`
+- If only specific subdomains:
+  - `movie.yourdomain.com/*`
+  - `movie1.yourdomain.com/*`
+  - etc.
+
+Important: If you use `*.yourdomain.com/*`, ensure your main site isn’t unintentionally routed through this worker.
+
+## 5) Configure ORIGIN_MAP
+Open `src/worker.js` and edit:
+
+```js
+const ORIGIN_MAP = {
+  "movie1.yourdomain.com": "https://upstreamsite.example",
+  ...
+};
