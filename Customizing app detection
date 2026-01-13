@@ -1,0 +1,14 @@
+
+---
+
+## wrangler.toml.example (optional, if using Wrangler)
+
+```toml
+name = "masked-url-worker"
+main = "src/worker.js"
+compatibility_date = "2026-01-13"
+
+# Optional route if you want Wrangler to manage it:
+# routes = [
+#   { pattern = "*.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]
