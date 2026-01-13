@@ -1,0 +1,206 @@
+export default {
+  async fetch(request) {
+    const clientUrl = new URL(request.url);
+
+    // ======================================================
+    // EDIT THIS SECTION ONLY
+    // Vanity host => Upstream origin
+    // ======================================================
+    const ORIGIN_MAP = {
+      "app1.yourdomain.com": "https://example.com",
+      "app2.yourdomain.com": "https://example.net",
+      "app3.yourdomain.com": "https://example.org",
+
+      // Streaming / portals
+      "movie.yourdomain.com": "http://upstream-movie.example",
+      "movie1.yourdomain.com": "http://upstream-movie1.example",
+      "movie2.yourdomain.com": "http://upstream-movie2.example",
+      "sports.yourdomain.com": "https://sports.example",
+      "live.yourdomain.com": "https://live.example",
+
+      // Tools / dashboards
+      "tools.yourdomain.com": "https://tools.example",
+      "dash.yourdomain.com": "https://dashboard.example",
+      "status.yourdomain.com": "https://status.example",
+
+      // Social / misc
+      "fb.yourdomain.com": "https://facebook.com",
+      "yt.yourdomain.com": "https://youtube.com",
+      "ig.yourdomain.com": "https://instagram.com",
+
+      // Extra examples (20+ total)
+      "cdn.yourdomain.com": "https://cdn.example",
+      "dl.yourdomain.com": "https://downloads.example",
+      "docs.yourdomain.com": "https://docs.example",
+      "help.yourdomain.com": "https://help.example",
+      "news.yourdomain.com": "https://news.example",
+      "shop.yourdomain.com": "https://shop.example",
+      "blog.yourdomain.com": "https://blog.example",
+      "forum.yourdomain.com": "https://forum.example",
+      "music.yourdomain.com": "https://music.example",
+      "tv.yourdomain.com": "https://tv.example",
+      "radio.yourdomain.com": "https://radio.example",
+    };
+
+    const upstreamBase = ORIGIN_MAP[clientUrl.hostname];
+    if (!upstreamBase) return new Response("Unknown host", { status: 404 });
+
+    const upstreamBaseUrl = new URL(upstreamBase);
+    const upstreamUrl = new URL(upstreamBase);
+    upstreamUrl.pathname = clientUrl.pathname;
+    upstreamUrl.search = clientUrl.search;
+
+    // ======================================================
+    // CLIENT CLASSIFICATION
+    // - IPTV/STB apps: instant redirect
+    // - Bots/preview/non-browser: redirect
+    // - Browsers: proxy/mask
+    // ======================================================
+    const uaRaw = request.headers.get("user-agent") || "";
+    const ua = uaRaw.toLowerCase();
+    const accept = (request.headers.get("accept") || "").toLowerCase();
+
+    // 1) IPTV / STB / MAG / media apps => instant redirect
+    if (isIptvOrStbClient(ua)) {
+      return Response.redirect(upstreamUrl.toString(), 302);
+    }
+
+    // 2) Bots / previews / CLI libs => redirect
+    const isPreviewOrBot =
+      /facebookexternalhit|facebot|twitterbot|slackbot|discordbot|whatsapp|telegrambot|linkedinbot|googlebot|bingbot|duckduckbot|yandexbot/i.test(
+        ua
+      );
+
+    const isCliOrLibrary =
+      /curl|wget|python|requests|aiohttp|node-fetch|undici|axios|okhttp|libcurl|go-http-client|java/i.test(
+        ua
+      );
+
+    const wantsHtml = accept.includes("text/html");
+
+    if (isPreviewOrBot || isCliOrLibrary || !wantsHtml) {
+      return Response.redirect(upstreamUrl.toString(), 302);
+    }
+
+    // ======================================================
+    // PROXY MODE (minimal “Code 1” style for compatibility)
+    // ======================================================
+    const headers = new Headers(request.headers);
+    headers.delete("origin");
+    headers.delete("referer");
+    headers.set("host", upstreamBaseUrl.host);
+
+    const upstreamResp = await fetch(
+      new Request(upstreamUrl.toString(), {
+        method: request.method,
+        headers,
+        body: request.body,
+        redirect: "manual",
+      })
+    );
+
+    // Rewrite redirects back to vanity host
+    const location = upstreamResp.headers.get("location");
+    if (location && upstreamResp.status >= 300 && upstreamResp.status < 400) {
+      const loc = new URL(location, upstreamUrl);
+      loc.protocol = clientUrl.protocol;
+      loc.host = clientUrl.host;
+      return new Response(null, {
+        status: upstreamResp.status,
+        headers: { Location: loc.toString() },
+      });
+    }
+
+    // If upstream blocks (Cloudflare/WAF), fail open to upstream
+    if (isLikelyUpstreamBlocked(upstreamResp)) {
+      return Response.redirect(upstreamUrl.toString(), 302);
+    }
+
+    const respHeaders = new Headers(upstreamResp.headers);
+    const contentType = (respHeaders.get("content-type") || "").toLowerCase();
+
+    // HTML rewrite (links back to masked host)
+    if (contentType.includes("text/html")) {
+      respHeaders.delete("content-length");
+
+      const rewriter = new HTMLRewriter()
+        .on("a[href]", new RewriteAttr("href", upstreamBaseUrl, clientUrl))
+        .on("link[href]", new RewriteAttr("href", upstreamBaseUrl, clientUrl))
+        .on("script[src]", new RewriteAttr("src", upstreamBaseUrl, clientUrl))
+        .on("img[src]", new RewriteAttr("src", upstreamBaseUrl, clientUrl))
+        .on("form[action]", new RewriteAttr("action", upstreamBaseUrl, clientUrl));
+
+      return rewriter.transform(
+        new Response(upstreamResp.body, {
+          status: upstreamResp.status,
+          headers: respHeaders,
+        })
+      );
+    }
+
+    // Non-HTML passthrough
+    return new Response(upstreamResp.body, {
+      status: upstreamResp.status,
+      headers: respHeaders,
+    });
+  },
+};
+
+// IPTV/STB detection: Smart STB, STBEmu, Tivimate, iSTB, MyTVOnline(+), MAG boxes, etc.
+function isIptvOrStbClient(ua) {
+  return (
+    /smartstb/.test(ua) ||
+    /stbemu|stb emu|stb emulator/.test(ua) ||
+    /tivimate/.test(ua) ||
+    /\bistb\b/.test(ua) ||
+    /mytvonline\+|mytvonline/.test(ua) ||
+    /formuler/.test(ua) ||
+    /mag\d{2,3}|infomir/.test(ua) ||
+    /iptv|ottplayer|xciptv|perfect player|gse|ssiptv|smart iptv|tvip/.test(ua) ||
+    /hbbtv|netcast|webos|tizen|roku|fire tv|aftb|androidtv/.test(ua) ||
+    /exoplayer|vlc|lavf|ffmpeg/.test(ua)
+  );
+}
+
+// Detect upstream WAF/Cloudflare blocks: do not bypass, just redirect.
+function isLikelyUpstreamBlocked(resp) {
+  const status = resp.status;
+  if (!(status === 403 || status === 429 || status === 503)) return false;
+
+  const server = (resp.headers.get("server") || "").toLowerCase();
+  const cfRay = resp.headers.get("cf-ray");
+  const cfCache = resp.headers.get("cf-cache-status");
+
+  if (server.includes("cloudflare") || cfRay || cfCache) return true;
+  return true;
+}
+
+class RewriteAttr {
+  constructor(attr, upstreamUrl, clientUrl) {
+    this.attr = attr;
+    this.upstreamUrl = upstreamUrl;
+    this.clientUrl = clientUrl;
+  }
+  element(e) {
+    const val = e.getAttribute(this.attr);
+    if (!val) return;
+
+    if (
+      val.startsWith("#") ||
+      val.startsWith("data:") ||
+      val.startsWith("mailto:") ||
+      val.startsWith("tel:") ||
+      val.startsWith("javascript:")
+    )
+      return;
+
+    try {
+      const abs = new URL(val, this.upstreamUrl);
+      if (abs.host === this.upstreamUrl.host) {
+        abs.protocol = this.clientUrl.protocol;
+        abs.host = this.clientUrl.host;
+        e.setAttribute(this.attr, abs.toString());
+      }
+    } catch {}
+  }
+}
