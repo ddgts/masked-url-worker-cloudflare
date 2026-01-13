@@ -1,0 +1,9 @@
+# Option A: route all subdomains (be careful if you run other subdomains)
+*.yourdomain.com/*
+
+# Option B: route only what you need
+movie.yourdomain.com/*
+movie1.yourdomain.com/*
+movie2.yourdomain.com/*
+sports.yourdomain.com/*
+live.yourdomain.com/*
